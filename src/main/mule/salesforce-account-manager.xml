@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+                          http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+                          http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+                          http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config">
+        <http:listener-connection host="0.0.0.0" port="8081" />
+    </http:listener-config>
+
+    <salesforce:sfdc-config name="Salesforce_Config" doc:name="Salesforce Config">
+        <salesforce:basic-connection username="${salesforce.username}" password="${salesforce.password}" securityToken="${salesforce.securityToken}" />
+    </salesforce:sfdc-config>
+
+    <configuration-properties file="config.properties" />
+
+    <flow name="account-management-flow" doc:id="account-management-flow">
+        <http:listener config-ref="HTTP_Listener_config" path="/api/accounts" doc:name="HTTP Listener" />
+        
+        <ee:transform doc:name="Validate and Transform Request">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+    name: payload.name,
+    email: payload.email,
+    contactNo: payload.contactNo
+}]]></ee:set-payload>
+            </ee:message>
+            <ee:variables>
+                <ee:set-variable variableName="accountData"><![CDATA[%dw 2.0
+output application/java
+---
+{
+    name: payload.name,
+    email: payload.email,
+    contactNo: payload.contactNo
+}]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <choice doc:name="Check if account exists">
+            <when expression="#[payload.name != null and payload.name != '']">
+                <salesforce:query config-ref="Salesforce_Config" doc:name="Query Existing Account">
+                    <salesforce:salesforce-query>SELECT Id, Name, Email__c, Contact_No__c FROM Account WHERE Name = '#[payload.name]'</salesforce:salesforce-query>
+                </salesforce:query>
+                
+                <choice doc:name="Account exists?">
+                    <when expression="#[sizeOf(payload) > 0]">
+                        <ee:transform doc:name="Update Account">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+    Id: payload[0].Id,
+    Name: vars.accountData.name,
+    Email__c: vars.accountData.email,
+    Contact_No__c: vars.accountData.contactNo
+}]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+                        
+                        <salesforce:update config-ref="Salesforce_Config" type="Account" doc:name="Update Account in Salesforce" />
+                        
+                        <ee:transform doc:name="Success Response - Update">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: true,
+    message: "Account updated successfully",
+    accountId: payload[0].Id,
+    operation: "UPDATE"
+}]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+                    </when>
+                    <otherwise>
+                        <ee:transform doc:name="Create New Account">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+    Name: vars.accountData.name,
+    Email__c: vars.accountData.email,
+    Contact_No__c: vars.accountData.contactNo
+}]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+                        
+                        <salesforce:create config-ref="Salesforce_Config" type="Account" doc:name="Create Account in Salesforce" />
+                        
+                        <ee:transform doc:name="Success Response - Create">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: true,
+    message: "Account created successfully",
+    accountId: payload[0].Id,
+    operation: "CREATE"
+}]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+                    </otherwise>
+                </choice>
+            </when>
+            <otherwise>
+                <ee:transform doc:name="Validation Error">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "VALIDATION_ERROR",
+    message: "Account name is required"
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+            </otherwise>
+        </choice>
+    </flow>
+
+    <error-handler name="global-error-handler">
+        <on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue">
+            <ee:transform doc:name="Error Response">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    error: "BUSINESS_ERROR",
+    message: "An error occurred while processing the request",
+    details: error.description
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+        </on-error-continue>
+    </error-handler>
+
+</mule>
